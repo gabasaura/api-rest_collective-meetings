@@ -1,6 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import random
+import hashlib
 
 db = SQLAlchemy()
 
@@ -15,7 +16,7 @@ class User(db.Model):
     active = db.Column(db.Boolean, nullable=False, default=True)
 
     meetings = db.relationship('Meeting', backref='creator', lazy=True)
-    availabilities = db.relationship('Availability', backref='user', lazy=True)
+    timeslots = db.relationship('Timeslot', backref='user', lazy=True)
 
     @staticmethod
     def _generate_random_color():
@@ -45,9 +46,18 @@ class Meeting(db.Model):
     description = db.Column(db.Text, nullable=True)
     creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    password_hash = db.Column(db.String(64), nullable=False)
 
-    availabilities = db.relationship('Availability', backref='meeting', lazy=True)
+    timeslots = db.relationship('Timeslot', backref='meeting', lazy=True)
     final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.password_hash = self._generate_password_hash()
+
+    def _generate_password_hash(self):
+        # Generate a hash from the meeting title
+        return hashlib.sha256(self.title.encode()).hexdigest()
 
     def serialize(self):
         return {
@@ -56,12 +66,13 @@ class Meeting(db.Model):
             'description': self.description,
             'creator_id': self.creator_id,
             'created_at': self.created_at.isoformat(),
-            'availabilities': [a.serialize() for a in self.availabilities],
-            'final_date': self.final_date.serialize() if self.final_date else None
+            'timeslots': [t.serialize() for t in self.timeslots],
+            'final_date': self.final_date.serialize() if self.final_date else None,
+            'password_hash': self.password_hash
         }
 
-class Availability(db.Model):
-    __tablename__ = 'availability'
+class Timeslot(db.Model):
+    __tablename__ = 'timeslot'
 
     id = db.Column(db.Integer, primary_key=True)
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
