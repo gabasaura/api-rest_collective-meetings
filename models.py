@@ -50,6 +50,10 @@ class Meeting(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     password_hash = db.Column(db.String(64), nullable=False)
     is_private = db.Column(db.Boolean, nullable=False, default=False)  # Indica si la reunión es privada
+    
+    # Nuevos campos para contar invitados y confirmaciones
+    total_guests = db.Column(db.Integer, default=0)
+    confirmed_guests = db.Column(db.Integer, default=0)
 
     # Relación para los timeslots relacionados con una reunión
     timeslots = db.relationship('Timeslot', backref='meeting', lazy=True)
@@ -92,7 +96,9 @@ class Meeting(db.Model):
             'timeslots': [t.serialize() for t in self.timeslots],
             'final_date': self.final_date.serialize() if self.final_date else None,
             'password_hash': self.password_hash,
-            'is_private': self.is_private  # Incluye la información sobre la privacidad de la reunión
+            'is_private': self.is_private,  # Incluye la información sobre la privacidad de la reunión
+            'total_guests': self.total_guests,
+            'confirmed_guests': self.confirmed_guests
         }
 
 class Timeslot(db.Model):
@@ -101,8 +107,8 @@ class Timeslot(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    day = db.Column(db.Enum('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', name='day_enum'), nullable=False)
-    block = db.Column(db.Enum('Morning', 'Afternoon', 'Evening', name='block_enum'), nullable=False)
+    date = db.Column(db.Date, nullable=False)  # Cambiado de day a date
+    block = db.Column(db.Enum('Block 1', 'Block 2', 'Block 3', name='block_enum'), nullable=False)  # Actualiza los bloques
     available = db.Column(db.Boolean, nullable=False, default=True)
 
     def serialize(self):
@@ -113,10 +119,11 @@ class Timeslot(db.Model):
             'id': self.id,
             'meeting_id': self.meeting_id,
             'user_id': self.user_id,
-            'day': self.day,
+            'date': self.date.isoformat(),  # Cambiado a date
             'block': self.block,
             'available': self.available
         }
+
 
 class FinalDate(db.Model):
     __tablename__ = 'final_date'

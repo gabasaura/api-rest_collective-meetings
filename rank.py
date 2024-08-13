@@ -25,3 +25,4 @@ def calculate_rankings(meeting_id):
     rankings = [{'day': day, 'block': block, 'count': count} for (day, block), count in sorted_slots[:3]]
     
     return rankings
+

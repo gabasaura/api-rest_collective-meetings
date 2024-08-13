@@ -3,6 +3,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from models import db, User, Meeting, Timeslot, FinalDate, guest_participation
 from utils import generate_random_color, generate_password_hash
 from rank import calculate_rankings
+import datetime
 
 import hashlib
 
@@ -122,23 +123,22 @@ def delete_meeting(meeting_id):
         db.session.rollback()
         abort(500, f'Error deleting meeting: {str(e)}')
 
-@routes.route('/meetings/<int:meeting_id>/access', methods=['POST'])
-def access_meeting(meeting_id):
-    data = request.json
-    if not data or not data.get('password'):
-        abort(400, 'Password required')
-
+@routes.route('/meetings/<int:meeting_id>/access/<string:hash>', methods=['GET'])
+def access_meeting(meeting_id, hash):
     try:
+        # Buscar la reunión por ID
         meeting = Meeting.query.get_or_404(meeting_id)
-        hashed_password = hashlib.sha256(data['password'].encode()).hexdigest()
 
-        if meeting.is_private and hashed_password != meeting.password_hash:
-            abort(403, 'Invalid password')
-        
+        # Verificar si la reunión es privada y si el hash coincide
+        if meeting.is_private and hash != meeting.password_hash:
+            abort(403, 'Invalid access hash')
+
+        # Si todo es válido, conceder acceso
         return jsonify({'message': 'Access granted'}), 200
 
     except SQLAlchemyError as e:
         abort(500, f'Error accessing meeting: {str(e)}')
+
 
 @routes.route('/meetings/<int:meeting_id>/add_guest', methods=['POST'])
 def add_guest_to_meeting(meeting_id):
@@ -171,6 +171,10 @@ def add_guest_to_meeting(meeting_id):
         db.session.execute(stmt)
         db.session.commit()
 
+        # Update participant counts
+        meeting.total_participants += 1
+        db.session.commit()
+
         return jsonify({
             'message': f'User {new_user.name} added as guest to meeting {meeting.title}',
             'user': new_user.serialize(),
@@ -182,6 +186,8 @@ def add_guest_to_meeting(meeting_id):
         db.session.rollback()
         abort(500, f'Error adding guest to meeting: {str(e)}')
 
+
+
 # Routes for Timeslot
 
 @routes.route('/timeslots', methods=['POST'])
@@ -190,7 +196,7 @@ def create_timeslot():
     if not data:
         abort(400, 'Request must be JSON')
 
-    required_fields = ['meeting_id', 'user_id', 'day', 'block']
+    required_fields = ['meeting_id', 'user_id', 'date', 'block']
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
@@ -199,7 +205,7 @@ def create_timeslot():
         new_timeslot = Timeslot(
             meeting_id=data['meeting_id'],
             user_id=data['user_id'],
-            day=data['day'],
+            date=datetime.strptime(data['date'], '%Y-%m-%d').date(),  # Convertir la fecha a objeto date
             block=data['block'],
             available=data.get('available', True)
         )
@@ -211,39 +217,20 @@ def create_timeslot():
         db.session.rollback()
         abort(500, f'Error creating timeslot: {str(e)}')
 
-@routes.route('/timeslots/<int:timeslot_id>', methods=['GET'])
-def get_timeslot(timeslot_id):
-    try:
-        timeslot = Timeslot.query.get_or_404(timeslot_id)
-        return jsonify(timeslot.serialize())
-    except SQLAlchemyError as e:
-        abort(500, f'Error retrieving timeslot: {str(e)}')
-
-@routes.route('/timeslots/<int:timeslot_id>', methods=['DELETE'])
-def delete_timeslot(timeslot_id):
-    try:
-        timeslot = Timeslot.query.get_or_404(timeslot_id)
-        db.session.delete(timeslot)
-        db.session.commit()
-        return jsonify({'message': 'Timeslot deleted successfully'}), 200
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        abort(500, f'Error deleting timeslot: {str(e)}')
-
 @routes.route('/update_timeslot', methods=['POST'])
 def update_timeslot():
     data = request.json
     user_id = data.get('user_id')
     meeting_id = data.get('meeting_id')
-    day = data.get('day')
+    date = datetime.strptime(data.get('date'), '%Y-%m-%d').date()  # Convertir la fecha a objeto date
     block = data.get('block')
     available = data.get('available')
 
-    timeslot = Timeslot.query.filter_by(user_id=user_id, meeting_id=meeting_id, day=day, block=block).first()
+    timeslot = Timeslot.query.filter_by(user_id=user_id, meeting_id=meeting_id, date=date, block=block).first()
     if timeslot:
         timeslot.available = available
     else:
-        timeslot = Timeslot(user_id=user_id, meeting_id=meeting_id, day=day, block=block, available=available)
+        timeslot = Timeslot(user_id=user_id, meeting_id=meeting_id, date=date, block=block, available=available)
         db.session.add(timeslot)
 
     db.session.commit()
@@ -251,6 +238,32 @@ def update_timeslot():
     rankings = calculate_rankings(meeting_id)
 
     return jsonify(rankings)
+
+@routes.route('/meetings/<int:meeting_id>/timeslots/<int:timeslot_id>', methods=['GET'])
+def get_timeslot_for_meeting(meeting_id, timeslot_id):
+    try:
+        timeslot = Timeslot.query.filter_by(id=timeslot_id, meeting_id=meeting_id).first_or_404()
+        return jsonify(timeslot.serialize())
+    except SQLAlchemyError as e:
+        abort(500, f'Error retrieving timeslot: {str(e)}')
+
+
+@routes.route('/timeslots/<int:meeting_id>/<int:timeslot_id>', methods=['DELETE'])
+def delete_timeslot(meeting_id, timeslot_id):
+    try:
+        # Filtrar el timeslot por meeting_id y timeslot_id
+        timeslot = Timeslot.query.filter_by(id=timeslot_id, meeting_id=meeting_id).first_or_404()
+        
+        # Si se encuentra, se procede a eliminarlo
+        db.session.delete(timeslot)
+        db.session.commit()
+        
+        return jsonify({'message': 'Timeslot deleted successfully'}), 200
+    except SQLAlchemyError as e:
+        # Si hay un error durante la eliminación, se hace rollback y se devuelve un error
+        db.session.rollback()
+        abort(500, f'Error deleting timeslot: {str(e)}')
+
 
 # Routes for FinalDate
 
@@ -280,13 +293,18 @@ def create_final_date():
         abort(500, f'Error creating final date: {str(e)}')
 
 
-@routes.route('/final_dates/<int:final_date_id>', methods=['GET'])
-def get_final_date(final_date_id):
+@routes.route('/final_dates', methods=['GET'])
+def get_final_dates():
+    meeting_id = request.args.get('meeting_id')
+    if not meeting_id:
+        abort(400, 'Meeting ID is required')
+
     try:
-        final_date = FinalDate.query.get_or_404(final_date_id)
-        return jsonify(final_date.serialize())
+        # Suponiendo que `calculate_final_dates` es la función que genera el ranking final
+        final_dates = calculate_final_dates(meeting_id)
+        return jsonify(final_dates), 200
     except SQLAlchemyError as e:
-        abort(500, f'Error retrieving final date: {str(e)}')
+        abort(500, f'Error retrieving final dates: {str(e)}')
 
 @routes.route('/final_dates/<int:final_date_id>', methods=['DELETE'])
 def delete_final_date(final_date_id):
@@ -298,4 +316,3 @@ def delete_final_date(final_date_id):
     except SQLAlchemyError as e:
         db.session.rollback()
         abort(500, f'Error deleting final date: {str(e)}')
-
