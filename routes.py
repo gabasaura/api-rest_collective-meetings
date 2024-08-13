@@ -1,6 +1,9 @@
 from flask import Blueprint, jsonify, request, abort
 from sqlalchemy.exc import SQLAlchemyError
 from models import db, User, Meeting, Timeslot, FinalDate, guest_participation
+from utils import generate_random_color, generate_password_hash
+from rank import calculate_rankings
+
 import hashlib
 
 routes = Blueprint('routes', __name__)
@@ -10,31 +13,6 @@ def hello():
     return jsonify({'message': 'Hello, welcome to the WeMeet app!'}), 200
 
 # Routes for User
-@routes.route('/users', methods=['POST'])
-def create_user():
-    data = request.json
-    if not data:
-        abort(400, 'Request must be JSON')
-
-    # Validar los campos requeridos
-    required_fields = ['name', 'email']
-    missing_fields = [field for field in required_fields if not data.get(field)]
-    if missing_fields:
-        abort(400, f'Missing required fields: {", ".join(missing_fields)}')
-
-    try:
-        # Crear un nuevo usuario con rol de invitado por defecto
-        new_user = User(
-            name=data['name'],
-            email=data['email'],
-        )
-        db.session.add(new_user)
-        db.session.commit()
-        return jsonify(new_user.serialize()), 201
-
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        abort(500, f'Error creating user: {str(e)}')
 
 @routes.route('/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
@@ -55,43 +33,71 @@ def delete_user(user_id):
         db.session.rollback()
         abort(500, f'Error deleting user: {str(e)}')
 
-
 # Routes for Meeting
+
 @routes.route('/meetings', methods=['POST'])
 def create_meeting():
     data = request.json
     if not data:
         abort(400, 'Request must be JSON')
 
-    # Validar los campos requeridos
-    required_fields = ['title', 'creator_id']
+    required_fields = ['title', 'creator_name', 'creator_email', 'is_private']
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
 
     try:
-        # Crear una nueva reunión
+        # Verificar si el usuario creador ya existe
+        creator = User.query.filter_by(email=data['creator_email']).first()
+        if not creator:
+            # Si el creador no existe, crearlo
+            creator = User(
+                name=data['creator_name'],
+                email=data['creator_email']
+            )
+            db.session.add(creator)
+            db.session.flush()  # Obtener ID del creador
+
+        # Crear la reunión
         new_meeting = Meeting(
             title=data['title'],
             description=data.get('description'),
-            creator_id=data['creator_id']
+            creator_id=creator.id,
+            is_private=data['is_private']
         )
         db.session.add(new_meeting)
+        db.session.flush()  # Obtener ID de la reunión
 
-        # Asignar roles al creador de la reunión: 'creator', 'moderator', y 'guest'
-        creator = User.query.get_or_404(data['creator_id'])
-        creator.role = 'creator'  # Actualiza el rol del creador a 'creator'
-
-        # Establecer la relación en la tabla de asociación con el rol de moderador y confirmación
+        # Asignar color y rol de moderador al creador
+        creator_color = generate_random_color()
         stmt = guest_participation.insert().values(
             user_id=creator.id,
             meeting_id=new_meeting.id,
-            confirmed=True  # El creador automáticamente confirma su participación
+            role='moderator',
+            confirmed=True,
+            color=creator_color
         )
         db.session.execute(stmt)
 
-        db.session.commit()
-        return jsonify(new_meeting.serialize()), 201
+        # Si la reunión es privada, generar un hash
+        if new_meeting.is_private:
+            meeting_hash = generate_password_hash(data['title'])
+            new_meeting.password_hash = meeting_hash
+            db.session.commit()
+
+            invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={meeting_hash}"
+            return jsonify({
+                'message': 'Meeting created successfully',
+                'meeting': new_meeting.serialize(),
+                'invite_link': invite_link
+            }), 201
+        else:
+            new_meeting.password_hash = None
+            db.session.commit()
+            return jsonify({
+                'message': 'Meeting created successfully',
+                'meeting': new_meeting.serialize()
+            }), 201
 
     except SQLAlchemyError as e:
         db.session.rollback()
@@ -126,36 +132,76 @@ def access_meeting(meeting_id):
         meeting = Meeting.query.get_or_404(meeting_id)
         hashed_password = hashlib.sha256(data['password'].encode()).hexdigest()
 
-        if hashed_password == meeting.password_hash:
-            return jsonify({'message': 'Access granted'}), 200
-        else:
+        if meeting.is_private and hashed_password != meeting.password_hash:
             abort(403, 'Invalid password')
+        
+        return jsonify({'message': 'Access granted'}), 200
 
     except SQLAlchemyError as e:
         abort(500, f'Error accessing meeting: {str(e)}')
 
+@routes.route('/meetings/<int:meeting_id>/add_guest', methods=['POST'])
+def add_guest_to_meeting(meeting_id):
+    data = request.json
+    if not data:
+        abort(400, 'Request must be JSON')
+
+    required_fields = ['name', 'email']
+    missing_fields = [field for field in required_fields if not data.get(field)]
+    if missing_fields:
+        abort(400, f'Missing required fields: {", ".join(missing_fields)}')
+
+    try:
+        meeting = Meeting.query.get_or_404(meeting_id)
+        new_user = User(
+            name=data['name'],
+            email=data['email']
+        )
+        db.session.add(new_user)
+        db.session.flush()
+
+        color = generate_random_color()
+        stmt = guest_participation.insert().values(
+            user_id=new_user.id,
+            meeting_id=meeting_id,
+            role='guest',
+            confirmed=False,
+            color=color
+        )
+        db.session.execute(stmt)
+        db.session.commit()
+
+        return jsonify({
+            'message': f'User {new_user.name} added as guest to meeting {meeting.title}',
+            'user': new_user.serialize(),
+            'meeting': meeting.serialize(),
+            'color': color
+        }), 201
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        abort(500, f'Error adding guest to meeting: {str(e)}')
 
 # Routes for Timeslot
+
 @routes.route('/timeslots', methods=['POST'])
 def create_timeslot():
     data = request.json
     if not data:
         abort(400, 'Request must be JSON')
 
-    # Validar los campos requeridos
     required_fields = ['meeting_id', 'user_id', 'day', 'block']
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
 
     try:
-        # Crear un nuevo timeslot
         new_timeslot = Timeslot(
             meeting_id=data['meeting_id'],
             user_id=data['user_id'],
             day=data['day'],
             block=data['block'],
-            available=data.get('available', True)  # Default value is True
+            available=data.get('available', True)
         )
         db.session.add(new_timeslot)
         db.session.commit()
@@ -184,22 +230,42 @@ def delete_timeslot(timeslot_id):
         db.session.rollback()
         abort(500, f'Error deleting timeslot: {str(e)}')
 
+@routes.route('/update_timeslot', methods=['POST'])
+def update_timeslot():
+    data = request.json
+    user_id = data.get('user_id')
+    meeting_id = data.get('meeting_id')
+    day = data.get('day')
+    block = data.get('block')
+    available = data.get('available')
+
+    timeslot = Timeslot.query.filter_by(user_id=user_id, meeting_id=meeting_id, day=day, block=block).first()
+    if timeslot:
+        timeslot.available = available
+    else:
+        timeslot = Timeslot(user_id=user_id, meeting_id=meeting_id, day=day, block=block, available=available)
+        db.session.add(timeslot)
+
+    db.session.commit()
+
+    rankings = calculate_rankings(meeting_id)
+
+    return jsonify(rankings)
 
 # Routes for FinalDate
+
 @routes.route('/final_dates', methods=['POST'])
 def create_final_date():
     data = request.json
     if not data:
         abort(400, 'Request must be JSON')
 
-    # Validar los campos requeridos
     required_fields = ['meeting_id', 'confirmed_date', 'confirmed_block']
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
 
     try:
-        # Crear la fecha final de la reunión
         new_final_date = FinalDate(
             meeting_id=data['meeting_id'],
             confirmed_date=data['confirmed_date'],
@@ -212,6 +278,7 @@ def create_final_date():
     except SQLAlchemyError as e:
         db.session.rollback()
         abort(500, f'Error creating final date: {str(e)}')
+
 
 @routes.route('/final_dates/<int:final_date_id>', methods=['GET'])
 def get_final_date(final_date_id):

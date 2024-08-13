@@ -1,7 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-import random
-import hashlib
+from utils import generate_random_color, generate_password_hash
 
 db = SQLAlchemy()
 
@@ -13,22 +12,8 @@ guest_participation = db.Table('user_meeting',
     db.Column('meeting_id', db.Integer, db.ForeignKey('meeting.id'), primary_key=True),
     db.Column('role', db.Enum('moderator', 'guest', name='role_enum'), nullable=False, default='guest'),  # El rol está ligado a la reunión
     db.Column('confirmed', db.Boolean, nullable=False, default=False),
-    db.Column('color', db.String(7), nullable=False, default=lambda: User._generate_random_color())  # Color asignado al usuario para la reunión
+    db.Column('color', db.String(7), nullable=False)  # Color asignado al usuario para la reunión, sin valor por defecto
 )
-
-@staticmethod
-def _generate_random_color():
-        """
-        Genera un código de color hexadecimal aleatorio, excluyendo negro y blanco.
-        Este color se usará dentro del contexto de una reunión.
-        """
-        excluded_colors = ['#FFFFFF', '#000000']
-        color = None
-
-        while not color or color in excluded_colors:
-            color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
-
-        return color
 
 class User(db.Model):
     __tablename__ = 'user'
@@ -64,6 +49,7 @@ class Meeting(db.Model):
     creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     password_hash = db.Column(db.String(64), nullable=False)
+    is_private = db.Column(db.Boolean, nullable=False, default=False)  # Indica si la reunión es privada
 
     # Relación para los timeslots relacionados con una reunión
     timeslots = db.relationship('Timeslot', backref='meeting', lazy=True)
@@ -76,24 +62,19 @@ class Meeting(db.Model):
         Inicializa una nueva instancia de Meeting y genera un hash de contraseña.
         """
         super().__init__(**kwargs)
-        self.password_hash = self._generate_password_hash()
-
-    def _generate_password_hash(self):
-        """
-        Genera un hash SHA-256 del título de la reunión que se usará como hash de la contraseña.
-        """
-        return hashlib.sha256(self.title.encode()).hexdigest()
+        self.password_hash = generate_password_hash(self.title)
 
     def assign_roles(self):
         """
         Asigna los roles al creador y a los demás participantes.
         El creador también es moderador por defecto.
         """
+        # Asigna el rol de moderador al creador de la reunión
         creator_participation = guest_participation.insert().values(
             user_id=self.creator_id,
             meeting_id=self.id,
             role='moderator',
-            color=User._generate_random_color()
+            color=generate_random_color()  # Asigna un color al creador
         )
         db.session.execute(creator_participation)
         db.session.commit()
@@ -110,7 +91,8 @@ class Meeting(db.Model):
             'created_at': self.created_at.isoformat(),
             'timeslots': [t.serialize() for t in self.timeslots],
             'final_date': self.final_date.serialize() if self.final_date else None,
-            'password_hash': self.password_hash
+            'password_hash': self.password_hash,
+            'is_private': self.is_private  # Incluye la información sobre la privacidad de la reunión
         }
 
 class Timeslot(db.Model):
