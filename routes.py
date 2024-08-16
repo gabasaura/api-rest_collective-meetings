@@ -13,7 +13,7 @@ routes = Blueprint('routes', __name__)
 def hello():
     return jsonify({'message': 'Hello, welcome to the WeMeet app!'}), 200
 
-# Routes for User
+# Routes for Users
 
 @routes.route('/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
