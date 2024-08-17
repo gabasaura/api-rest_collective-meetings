@@ -1,8 +1,9 @@
 from flask import Blueprint, jsonify, request, abort
 from sqlalchemy.exc import SQLAlchemyError
 from models import db, User, Meeting, Timeslot, FinalDate, guest_participation
-from utils import generate_random_color, generate_password_hash
+from utils import generate_random_color, generate_meeting_hash
 from rank import calculate_rankings
+from final_date import calculate_final_date
 import datetime
 
 import hashlib
@@ -39,66 +40,58 @@ def delete_user(user_id):
 @routes.route('/meetings', methods=['POST'])
 def create_meeting():
     data = request.json
-    if not data:
-        abort(400, 'Request must be JSON')
+    if not data or 'title' not in data or 'creator_email' not in data:
+        abort(400, 'Missing required fields')
 
-    required_fields = ['title', 'creator_name', 'creator_email', 'is_private']
+    required_fields = ['title', 'creator_name', 'creator_email']
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
 
+    # Normalizar el correo electrónico del creador
+    normalized_email = data['creator_email'].strip().lower()
+
+    # Verificar si el correo del creador ya existe en otra reunión
+    existing_meeting = Meeting.query.join(User).filter(
+        User.email == normalized_email,
+        Meeting.creator_id == User.id
+    ).first()
+
+    if existing_meeting:
+        abort(400, 'This email is already used to create another meeting.')
+
     try:
         # Verificar si el usuario creador ya existe
-        creator = User.query.filter_by(email=data['creator_email']).first()
+        creator = User.query.filter_by(email=normalized_email).first()
         if not creator:
             # Si el creador no existe, crearlo
             creator = User(
-                name=data['creator_name'],
-                email=data['creator_email']
+                name=data['creator_name'].strip(),
+                email=normalized_email
             )
             db.session.add(creator)
-            db.session.flush()  # Obtener ID del creador
+            db.session.flush()
 
         # Crear la reunión
         new_meeting = Meeting(
-            title=data['title'],
+            title=data['title'].strip(),
             description=data.get('description'),
             creator_id=creator.id,
-            is_private=data['is_private']
         )
         db.session.add(new_meeting)
-        db.session.flush()  # Obtener ID de la reunión
+        db.session.flush()
 
-        # Asignar color y rol de moderador al creador
-        creator_color = generate_random_color()
-        stmt = guest_participation.insert().values(
-            user_id=creator.id,
-            meeting_id=new_meeting.id,
-            role='moderator',
-            confirmed=True,
-            color=creator_color
-        )
-        db.session.execute(stmt)
+        # Generar un hash único para la reunión privada
+        meeting_hash = generate_meeting_hash(data['title'], creator.email)
+        new_meeting.password_hash = meeting_hash
+        db.session.commit()
 
-        # Si la reunión es privada, generar un hash
-        if new_meeting.is_private:
-            meeting_hash = generate_password_hash(data['title'])
-            new_meeting.password_hash = meeting_hash
-            db.session.commit()
-
-            invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={meeting_hash}"
-            return jsonify({
-                'message': 'Meeting created successfully',
-                'meeting': new_meeting.serialize(),
-                'invite_link': invite_link
-            }), 201
-        else:
-            new_meeting.password_hash = None
-            db.session.commit()
-            return jsonify({
-                'message': 'Meeting created successfully',
-                'meeting': new_meeting.serialize()
-            }), 201
+        invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={meeting_hash}"
+        return jsonify({
+            'message': 'Meeting created successfully',
+            'meeting': new_meeting.serialize(),
+            'invite_link': invite_link
+        }), 201
 
     except SQLAlchemyError as e:
         db.session.rollback()
@@ -158,8 +151,9 @@ def add_guest_to_meeting(meeting_id):
             email=data['email']
         )
         db.session.add(new_user)
-        db.session.flush()
+        db.session.flush()  # Flush to get new_user.id before committing
 
+        # Add new guest to the meeting
         color = generate_random_color()
         stmt = guest_participation.insert().values(
             user_id=new_user.id,
@@ -169,10 +163,9 @@ def add_guest_to_meeting(meeting_id):
             color=color
         )
         db.session.execute(stmt)
-        db.session.commit()
 
         # Update participant counts
-        meeting.total_participants += 1
+        meeting.total_guests += 1  # Use total_guests instead of total_participants
         db.session.commit()
 
         return jsonify({
@@ -186,6 +179,24 @@ def add_guest_to_meeting(meeting_id):
         db.session.rollback()
         abort(500, f'Error adding guest to meeting: {str(e)}')
 
+@routes.route('/meetings/<int:meeting_id>/final_date/<int:final_date_id>/summary', methods=['GET'])
+def get_meeting_summary(meeting_id, final_date_id):
+    try:
+        meeting = Meeting.query.get_or_404(meeting_id)
+        final_date = FinalDate.query.get_or_404(final_date_id)
+        
+        confirmed_guests = meeting.count_confirmed_guests(final_date.date)
+        total_guests = meeting.count_total_guests()
+
+        return jsonify({
+            'meeting': meeting.title,
+            'final_date': final_date.date.isoformat(),
+            'total_guests': total_guests,
+            'confirmed_guests': confirmed_guests
+        }), 200
+
+    except SQLAlchemyError as e:
+        abort(500, f'Error retrieving meeting summary: {str(e)}')
 
 
 # Routes for Timeslot
@@ -265,8 +276,7 @@ def delete_timeslot(meeting_id, timeslot_id):
         abort(500, f'Error deleting timeslot: {str(e)}')
 
 
-# Routes for FinalDate
-
+# Ruta para crear una nueva fecha final
 @routes.route('/final_dates', methods=['POST'])
 def create_final_date():
     data = request.json
@@ -292,7 +302,7 @@ def create_final_date():
         db.session.rollback()
         abort(500, f'Error creating final date: {str(e)}')
 
-
+# Ruta para obtener las fechas finales de un meeting en particular
 @routes.route('/final_dates', methods=['GET'])
 def get_final_dates():
     meeting_id = request.args.get('meeting_id')
@@ -300,12 +310,12 @@ def get_final_dates():
         abort(400, 'Meeting ID is required')
 
     try:
-        # Suponiendo que `calculate_final_dates` es la función que genera el ranking final
-        final_dates = calculate_final_dates(meeting_id)
+        final_dates = calculate_final_dates(meeting_id)  # Usa la función de final_date.py
         return jsonify(final_dates), 200
     except SQLAlchemyError as e:
         abort(500, f'Error retrieving final dates: {str(e)}')
 
+# Ruta para eliminar una fecha final
 @routes.route('/final_dates/<int:final_date_id>', methods=['DELETE'])
 def delete_final_date(final_date_id):
     try:
@@ -316,3 +326,24 @@ def delete_final_date(final_date_id):
     except SQLAlchemyError as e:
         db.session.rollback()
         abort(500, f'Error deleting final date: {str(e)}')
+
+# Ruta para actualizar el número de participantes confirmados para una fecha final
+@routes.route('/final_date/<int:final_date_id>/update_confirmed', methods=['POST'])
+def update_confirmed_for_final_date(final_date_id):
+    try:
+        final_date = FinalDate.query.get_or_404(final_date_id)
+        confirmed_count = guest_participation.query.filter_by(
+            meeting_id=final_date.meeting_id, confirmed=True
+        ).count()
+        
+        final_date.confirmed_participants = confirmed_count
+        db.session.commit()
+
+        return jsonify({
+            'message': f'Confirmed participants updated for final date {final_date.confirmed_date}',
+            'final_date': final_date.serialize()
+        }), 200
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        abort(500, f'Error updating confirmed participants: {str(e)}')

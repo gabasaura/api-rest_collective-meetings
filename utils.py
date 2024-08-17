@@ -1,5 +1,7 @@
 import random
 import hashlib
+import time
+
 
 def generate_random_color():
     """
@@ -14,8 +16,8 @@ def generate_random_color():
 
     return color
 
-def generate_password_hash(title):
-    """
-    Genera un hash SHA-256 del título de la reunión que se usará como hash de la contraseña.
-    """
-    return hashlib.sha256(title.encode()).hexdigest()
+def generate_meeting_hash(title, creator_email):
+    # Crear un hash único basado en el título de la reunión, correo del creador y timestamp
+    unique_string = f"{title}-{creator_email}-{time.time()}"
+    return hashlib.sha256(unique_string.encode()).hexdigest()
+

@@ -1,7 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-from utils import generate_random_color, generate_password_hash
-
+from utils import generate_random_color, generate_meeting_hash
 db = SQLAlchemy()
 
 # Association Table for Users and Meetings
@@ -12,7 +11,7 @@ guest_participation = db.Table('user_meeting',
     db.Column('meeting_id', db.Integer, db.ForeignKey('meeting.id'), primary_key=True),
     db.Column('role', db.Enum('moderator', 'guest', name='role_enum'), nullable=False, default='guest'),  # El rol está ligado a la reunión
     db.Column('confirmed', db.Boolean, nullable=False, default=False),
-    db.Column('color', db.String(7), nullable=False)  # Color asignado al usuario para la reunión, sin valor por defecto
+    db.Column('color', db.String(7), nullable=False)  # Color asignado al usuario para la reunión
 )
 
 class User(db.Model):
@@ -44,12 +43,11 @@ class Meeting(db.Model):
     __tablename__ = 'meeting'
 
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(100), nullable=False)
+    title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text, nullable=True)
     creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     password_hash = db.Column(db.String(64), nullable=False)
-    is_private = db.Column(db.Boolean, nullable=False, default=False)  # Indica si la reunión es privada
     
     # Nuevos campos para contar invitados y confirmaciones
     total_guests = db.Column(db.Integer, default=0)
@@ -66,7 +64,7 @@ class Meeting(db.Model):
         Inicializa una nueva instancia de Meeting y genera un hash de contraseña.
         """
         super().__init__(**kwargs)
-        self.password_hash = generate_password_hash(self.title)
+        self.password_hash = generate_meeting_hash(self.title)
 
     def assign_roles(self):
         """
@@ -83,6 +81,23 @@ class Meeting(db.Model):
         db.session.execute(creator_participation)
         db.session.commit()
 
+    def count_confirmed_guests(self):
+        """
+        Cuenta el número de invitados confirmados para esta reunión.
+        """
+        return db.session.query(guest_participation).filter_by(
+            meeting_id=self.id,
+            confirmed=True
+        ).count()
+
+    def count_total_guests(self):
+        """
+        Cuenta el número total de invitados para esta reunión.
+        """
+        return db.session.query(guest_participation).filter_by(
+            meeting_id=self.id
+        ).count()
+
     def serialize(self):
         """
         Serializa la instancia de Meeting a un diccionario.
@@ -96,7 +111,6 @@ class Meeting(db.Model):
             'timeslots': [t.serialize() for t in self.timeslots],
             'final_date': self.final_date.serialize() if self.final_date else None,
             'password_hash': self.password_hash,
-            'is_private': self.is_private,  # Incluye la información sobre la privacidad de la reunión
             'total_guests': self.total_guests,
             'confirmed_guests': self.confirmed_guests
         }
@@ -124,14 +138,13 @@ class Timeslot(db.Model):
             'available': self.available
         }
 
-
 class FinalDate(db.Model):
     __tablename__ = 'final_date'
-
+    
     id = db.Column(db.Integer, primary_key=True)
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
-    confirmed_date = db.Column(db.Date, nullable=False)
-    confirmed_block = db.Column(db.Enum('Morning', 'Afternoon', 'Evening', name='block_enum'), nullable=False)
+    date = db.Column(db.Date, nullable=False)
+    confirmed_participants = db.Column(db.Integer, default=0)  # Nuevo campo
 
     def serialize(self):
         """
@@ -140,6 +153,7 @@ class FinalDate(db.Model):
         return {
             'id': self.id,
             'meeting_id': self.meeting_id,
-            'confirmed_date': self.confirmed_date.isoformat(),
-            'confirmed_block': self.confirmed_block
+            'date': self.date.isoformat(),
+            'confirmed_participants': self.confirmed_participants  # Incluir en la serialización
         }
+    
