@@ -1,6 +1,7 @@
 from collections import defaultdict
+from models import Timeslot
 
-def calculate_final_date(available_dates):
+def calculate_final_date(timeslot):
     """
     Calcula la fecha final según las disponibilidades.
 
@@ -10,7 +11,7 @@ def calculate_final_date(available_dates):
     date_counter = defaultdict(int)
 
     # Contar cuántas veces aparece cada fecha
-    for date in available_dates:
+    for date in timeslot:
         date_counter[date] += 1
 
     # Ordenar las fechas por número de coincidencias (de mayor a menor)
