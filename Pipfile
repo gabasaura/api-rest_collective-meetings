@@ -9,6 +9,7 @@ flask-sqlalchemy = "*"
 flask-cors = "*"
 flask-migrate = "*"
 python-dotenv = "*"
+flask-swagger-ui = "*"
 
 [dev-packages]
 

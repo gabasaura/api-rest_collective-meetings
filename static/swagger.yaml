@@ -1,0 +1,83 @@
+openapi: 3.0.0
+info:
+  title: Shared Calendar API
+  version: 1.0.0
+  description: API para la gestión de reuniones y participantes
+servers:
+  - url: http://localhost:5000
+paths:
+  /users/{user_id}:
+    get:
+      summary: Obtener usuario
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detalles del usuario
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  email:
+                    type: string
+        '404':
+          description: Usuario no encontrado
+  /meetings:
+    post:
+      summary: Crear reunión
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                creator_name:
+                  type: string
+                creator_email:
+                  type: string
+                description:
+                  type: string
+      responses:
+        '201':
+          description: Reunión creada
+  /meetings/{meeting_id}:
+    get:
+      summary: Obtener detalles de una reunión
+      parameters:
+        - name: meeting_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detalles de la reunión
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  title:
+                    type: string
+                  description:
+                    type: string
+                  creator_name:
+                    type: string
+                  creator_email:
+                    type: string
+        '404':
+          description: Reunión no encontrada
