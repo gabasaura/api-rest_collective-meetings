@@ -59,12 +59,13 @@ class Meeting(db.Model):
     # Relación para la fecha final de la reunión (uno a uno)
     final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy=True)
 
-    def __init__(self, **kwargs):
+    def __init__(self, title, creator_email, **kwargs):
         """
         Inicializa una nueva instancia de Meeting y genera un hash de contraseña.
         """
-        super().__init__(**kwargs)
-        self.password_hash = generate_meeting_hash(self.title)
+        super(Meeting, self).__init__(title=title, **kwargs)
+        # Genera el hash usando el título de la reunión y el correo del creador
+        self.password_hash = generate_meeting_hash(title, creator_email)
 
     def assign_roles(self):
         """

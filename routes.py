@@ -1,12 +1,10 @@
 from flask import Blueprint, jsonify, request, abort
 from sqlalchemy.exc import SQLAlchemyError
 from models import db, User, Meeting, Timeslot, FinalDate, guest_participation
-from utils import generate_random_color, generate_meeting_hash
+from utils import generate_random_color
 from rank import calculate_rankings
 from final_date import calculate_final_date
 import datetime
-
-import hashlib
 
 routes = Blueprint('routes', __name__)
 
@@ -14,7 +12,7 @@ routes = Blueprint('routes', __name__)
 def hello():
     return jsonify({'message': 'Hello, welcome to the WeMeet app!'}), 200
 
-# Routes for Users
+#### Routes for Users ####
 
 @routes.route('/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
@@ -35,11 +33,13 @@ def delete_user(user_id):
         db.session.rollback()
         abort(500, f'Error deleting user: {str(e)}')
 
-# Routes for Meeting
+#### Routes for Meeting ####
 
 @routes.route('/meetings', methods=['POST'])
 def create_meeting():
     data = request.json
+    
+    # Verificación de campos requeridos
     if not data or 'title' not in data or 'creator_email' not in data:
         abort(400, 'Missing required fields')
 
@@ -70,23 +70,21 @@ def create_meeting():
                 email=normalized_email
             )
             db.session.add(creator)
-            db.session.flush()
+            db.session.flush()  # Flushea para obtener el ID del creador
 
         # Crear la reunión
         new_meeting = Meeting(
             title=data['title'].strip(),
             description=data.get('description'),
             creator_id=creator.id,
+            creator_email=normalized_email  # Pasar creator_email para el hash en el constructor
         )
         db.session.add(new_meeting)
-        db.session.flush()
-
-        # Generar un hash único para la reunión privada
-        meeting_hash = generate_meeting_hash(data['title'], creator.email)
-        new_meeting.password_hash = meeting_hash
         db.session.commit()
 
-        invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={meeting_hash}"
+        # Crear el enlace de invitación usando el hash que ya está en la instancia
+        invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={new_meeting.password_hash}"
+
         return jsonify({
             'message': 'Meeting created successfully',
             'meeting': new_meeting.serialize(),
