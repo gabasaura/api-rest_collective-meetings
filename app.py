@@ -25,7 +25,17 @@ def create_app():
 
     # Register routes
     from routes import routes
+    from users_routes import users_bp
+    from meetings_routes import meetings_bp
+    from timeslots_routes import timeslots_bp
+    from final_dates_routes import final_dates_bp
+
     app.register_blueprint(routes)
+    app.register_blueprint(users_bp)
+    app.register_blueprint(meetings_bp)
+    app.register_blueprint(timeslots_bp)
+    app.register_blueprint(final_dates_bp)
+
 
     with app.app_context():
         db.create_all()
