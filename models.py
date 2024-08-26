@@ -1,18 +1,27 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from utils import generate_random_color, generate_meeting_hash
+
 db = SQLAlchemy()
 
-# Association Table for Users and Meetings
-# Esta tabla establece una relación de muchos a muchos entre los usuarios y las reuniones
-# Aquí se guarda el rol del usuario y si ha confirmado su participación
+# Definición de la tabla de asociación de participación de invitados
 guest_participation = db.Table('user_meeting',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('meeting_id', db.Integer, db.ForeignKey('meeting.id'), primary_key=True),
-    db.Column('role', db.Enum('moderator', 'guest', name='role_enum'), nullable=False, default='guest'),  # El rol está ligado a la reunión
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), nullable=False),
     db.Column('confirmed', db.Boolean, nullable=False, default=False),
     db.Column('color', db.String(7), nullable=False)  # Color asignado al usuario para la reunión
 )
+
+class Role(db.Model):
+    __tablename__ = 'role'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), nullable=False, unique=True)
+    permissions = db.Column(db.Text)  # Permisos almacenados como JSON o cadena de texto
+
+    def __repr__(self):
+        return f'<Role {self.name}>'
 
 class User(db.Model):
     __tablename__ = 'user'
@@ -22,16 +31,11 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     active = db.Column(db.Boolean, nullable=False, default=True)
 
-    # Relación para los usuarios asociados con múltiples reuniones (relevante para cualquier rol)
-    meetings = db.relationship('Meeting', secondary=guest_participation, backref='participants', lazy='dynamic')
-    
-    # Relación para los timeslots relacionados con un usuario
-    timeslots = db.relationship('Timeslot', backref='user', lazy=True)
+    # Relación con reuniones
+    meetings = db.relationship('Meeting', secondary=guest_participation, backref='participants', lazy='select')
+    timeslots = db.relationship('Timeslot', backref='user', lazy='select')
 
     def serialize(self):
-        """
-        Serializa la instancia de User a un diccionario.
-        """
         return {
             'id': self.id,
             'name': self.name,
@@ -48,61 +52,15 @@ class Meeting(db.Model):
     creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     password_hash = db.Column(db.String(64), nullable=False)
-    
-    # Nuevos campos para contar invitados y confirmaciones
+
     total_guests = db.Column(db.Integer, default=0)
     confirmed_guests = db.Column(db.Integer, default=0)
 
-    # Relación para los timeslots relacionados con una reunión
-    timeslots = db.relationship('Timeslot', backref='meeting', lazy=True)
-    
-    # Relación para la fecha final de la reunión (uno a uno)
-    final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy=True)
-
-    def __init__(self, title, creator_email, **kwargs):
-        """
-        Inicializa una nueva instancia de Meeting y genera un hash de contraseña.
-        """
-        super(Meeting, self).__init__(title=title, **kwargs)
-        # Genera el hash usando el título de la reunión y el correo del creador
-        self.password_hash = generate_meeting_hash(title, creator_email)
-
-    def assign_roles(self):
-        """
-        Asigna los roles al creador y a los demás participantes.
-        El creador también es moderador por defecto.
-        """
-        # Asigna el rol de moderador al creador de la reunión
-        creator_participation = guest_participation.insert().values(
-            user_id=self.creator_id,
-            meeting_id=self.id,
-            role='moderator',
-            color=generate_random_color()  # Asigna un color al creador
-        )
-        db.session.execute(creator_participation)
-        db.session.commit()
-
-    def count_confirmed_guests(self):
-        """
-        Cuenta el número de invitados confirmados para esta reunión.
-        """
-        return db.session.query(guest_participation).filter_by(
-            meeting_id=self.id,
-            confirmed=True
-        ).count()
-
-    def count_total_guests(self):
-        """
-        Cuenta el número total de invitados para esta reunión.
-        """
-        return db.session.query(guest_participation).filter_by(
-            meeting_id=self.id
-        ).count()
+    # Relación con otros modelos
+    timeslots = db.relationship('Timeslot', backref='meeting', lazy='joined')
+    final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy='joined')
 
     def serialize(self):
-        """
-        Serializa la instancia de Meeting a un diccionario.
-        """
         return {
             'id': self.id,
             'title': self.title,
@@ -122,19 +80,16 @@ class Timeslot(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    date = db.Column(db.Date, nullable=False)  # Cambiado de day a date
-    block = db.Column(db.Enum('Block 1', 'Block 2', 'Block 3', name='block_enum'), nullable=False)  # Actualiza los bloques
+    date = db.Column(db.Date, nullable=False)
+    block = db.Column(db.Enum('Block 1', 'Block 2', 'Block 3', name='block_enum'), nullable=False)
     available = db.Column(db.Boolean, nullable=False, default=True)
 
     def serialize(self):
-        """
-        Serializa la instancia de Timeslot a un diccionario.
-        """
         return {
             'id': self.id,
             'meeting_id': self.meeting_id,
             'user_id': self.user_id,
-            'date': self.date.isoformat(),  # Cambiado a date
+            'date': self.date.isoformat(),
             'block': self.block,
             'available': self.available
         }
@@ -145,16 +100,12 @@ class FinalDate(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
     date = db.Column(db.Date, nullable=False)
-    confirmed_participants = db.Column(db.Integer, default=0)  # Nuevo campo
+    confirmed_participants = db.Column(db.Integer, default=0)
 
     def serialize(self):
-        """
-        Serializa la instancia de FinalDate a un diccionario.
-        """
         return {
             'id': self.id,
             'meeting_id': self.meeting_id,
             'date': self.date.isoformat(),
-            'confirmed_participants': self.confirmed_participants  # Incluir en la serialización
+            'confirmed_participants': self.confirmed_participants
         }
-    

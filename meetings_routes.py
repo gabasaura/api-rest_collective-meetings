@@ -23,27 +23,23 @@ def create_meeting():
     # Normalizar el correo electrónico del creador
     normalized_email = data['creator_email'].strip().lower()
 
-    # Verificar si el correo del creador ya existe en otra reunión
-    existing_meeting = Meeting.query.join(User).filter(
-        User.email == normalized_email,
-        Meeting.creator_id == User.id
-    ).first()
+    # Verificar si el usuario creador ya existe y si tiene el rol de "creator"
+    creator = User.query.filter_by(email=normalized_email).first()
+    if creator:
+        # Verificar si el usuario ya es creador en otra reunión
+        if 'creator' in [role.name for role in creator.roles]:
+            abort(400, 'This email is already used to create another meeting as a creator.')
 
-    if existing_meeting:
-        abort(400, 'This email is already used to create another meeting.')
+    else:
+        # Si el creador no existe, crearlo
+        creator = User(
+            name=data['creator_name'].strip(),
+            email=normalized_email
+        )
+        db.session.add(creator)
+        db.session.flush()  # Flushea para obtener el ID del creador
 
     try:
-        # Verificar si el usuario creador ya existe
-        creator = User.query.filter_by(email=normalized_email).first()
-        if not creator:
-            # Si el creador no existe, crearlo
-            creator = User(
-                name=data['creator_name'].strip(),
-                email=normalized_email
-            )
-            db.session.add(creator)
-            db.session.flush()  # Flushea para obtener el ID del creador
-
         # Crear la reunión
         new_meeting = Meeting(
             title=data['title'].strip(),
@@ -51,6 +47,27 @@ def create_meeting():
             creator_id=creator.id,
             creator_email=normalized_email  # Pasar creator_email para el hash en el constructor
         )
+
+        # Obtener o crear los roles de "moderator" y "creator"
+        moderator_role = Role.query.filter_by(name='moderator').first()
+        if not moderator_role:
+            moderator_role = Role(name='moderator')
+            db.session.add(moderator_role)
+            db.session.flush()  # Flushea para obtener el ID del rol
+
+        creator_role = Role.query.filter_by(name='creator').first()
+        if not creator_role:
+            creator_role = Role(name='creator')
+            db.session.add(creator_role)
+            db.session.flush()  # Flushea para obtener el ID del rol
+
+        # Asignar los roles al creador
+        if moderator_role not in creator.roles:
+            creator.roles.append(moderator_role)
+
+        if creator_role not in creator.roles:
+            creator.roles.append(creator_role)
+
         db.session.add(new_meeting)
         db.session.commit()
 
