@@ -1,11 +1,10 @@
 #### Routes for Meeting ####
 from flask import Blueprint, jsonify, request, abort
 from sqlalchemy.exc import SQLAlchemyError
-from models import db, User, Meeting, guest_participation, FinalDate
-from utils import generate_random_color
+from models import db, User, Meeting, guest_participation, FinalDate, Role
+from utils import generate_random_color, generate_meeting_hash
 
 meetings_bp = Blueprint('meetings', __name__)
-
 
 @meetings_bp.route('/meetings', methods=['POST'])
 def create_meeting():
@@ -23,29 +22,28 @@ def create_meeting():
     # Normalizar el correo electrónico del creador
     normalized_email = data['creator_email'].strip().lower()
 
-    # Verificar si el usuario creador ya existe y si tiene el rol de "creator"
+    # Verificar si el usuario creador ya existe
     creator = User.query.filter_by(email=normalized_email).first()
     if creator:
         # Verificar si el usuario ya es creador en otra reunión
         if 'creator' in [role.name for role in creator.roles]:
             abort(400, 'This email is already used to create another meeting as a creator.')
-
     else:
         # Si el creador no existe, crearlo
-        creator = User(
-            name=data['creator_name'].strip(),
-            email=normalized_email
-        )
+        creator = User(name=data['creator_name'].strip(), email=normalized_email)
         db.session.add(creator)
         db.session.flush()  # Flushea para obtener el ID del creador
 
     try:
+        # Generar un hash único para la reunión usando el título y el correo del creador
+        meeting_hash = generate_meeting_hash(data['title'].strip(), normalized_email)
+
         # Crear la reunión
         new_meeting = Meeting(
             title=data['title'].strip(),
             description=data.get('description'),
             creator_id=creator.id,
-            creator_email=normalized_email  # Pasar creator_email para el hash en el constructor
+            password_hash=meeting_hash
         )
 
         # Obtener o crear los roles de "moderator" y "creator"
@@ -71,7 +69,7 @@ def create_meeting():
         db.session.add(new_meeting)
         db.session.commit()
 
-        # Crear el enlace de invitación usando el hash que ya está en la instancia
+        # Crear el enlace de invitación usando el hash generado
         invite_link = f"http://localhost:5000/meetings/{new_meeting.id}/access?hash={new_meeting.password_hash}"
 
         return jsonify({
@@ -83,14 +81,6 @@ def create_meeting():
     except SQLAlchemyError as e:
         db.session.rollback()
         abort(500, f'Error creating meeting: {str(e)}')
-
-@meetings_bp.route('/meetings/<int:meeting_id>', methods=['GET'])
-def get_meeting(meeting_id):
-    try:
-        meeting = Meeting.query.get_or_404(meeting_id)
-        return jsonify(meeting.serialize())
-    except SQLAlchemyError as e:
-        abort(500, f'Error retrieving meeting: {str(e)}')
 
 @meetings_bp.route('/meetings/<int:meeting_id>', methods=['DELETE'])
 def delete_meeting(meeting_id):
@@ -119,7 +109,6 @@ def access_meeting(meeting_id, hash):
     except SQLAlchemyError as e:
         abort(500, f'Error accessing meeting: {str(e)}')
 
-
 @meetings_bp.route('/meetings/<int:meeting_id>/add_guest', methods=['POST'])
 def add_guest_to_meeting(meeting_id):
     data = request.json
@@ -133,26 +122,32 @@ def add_guest_to_meeting(meeting_id):
 
     try:
         meeting = Meeting.query.get_or_404(meeting_id)
-        new_user = User(
-            name=data['name'],
-            email=data['email']
-        )
+
+        # Crear nuevo usuario
+        new_user = User(name=data['name'].strip(), email=data['email'].strip())
         db.session.add(new_user)
         db.session.flush()  # Flush to get new_user.id before committing
 
-        # Add new guest to the meeting
+        # Obtener o crear el rol de "guest"
+        guest_role = Role.query.filter_by(name='guest').first()
+        if not guest_role:
+            guest_role = Role(name='guest')
+            db.session.add(guest_role)
+            db.session.flush()  # Flushea para obtener el ID del rol
+
+        # Añadir el nuevo invitado a la reunión
         color = generate_random_color()
         stmt = guest_participation.insert().values(
             user_id=new_user.id,
             meeting_id=meeting_id,
-            role='guest',
+            role_id=guest_role.id,
             confirmed=False,
             color=color
         )
         db.session.execute(stmt)
 
-        # Update participant counts
-        meeting.total_guests += 1  # Use total_guests instead of total_participants
+        # Actualizar conteos de participantes
+        meeting.total_guests += 1
         db.session.commit()
 
         return jsonify({
@@ -172,8 +167,8 @@ def get_meeting_summary(meeting_id, final_date_id):
         meeting = Meeting.query.get_or_404(meeting_id)
         final_date = FinalDate.query.get_or_404(final_date_id)
         
-        confirmed_guests = meeting.count_confirmed_guests(final_date.date)
-        total_guests = meeting.count_total_guests()
+        confirmed_guests = db.session.query(guest_participation).filter_by(meeting_id=meeting_id, confirmed=True).count()
+        total_guests = db.session.query(guest_participation).filter_by(meeting_id=meeting_id).count()
 
         return jsonify({
             'meeting': meeting.title,
