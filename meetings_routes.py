@@ -1,4 +1,3 @@
-#### Routes for Meeting ####
 from flask import Blueprint, jsonify, request, abort
 from sqlalchemy.exc import SQLAlchemyError
 from models import db, User, Meeting, guest_participation, FinalDate, Role
@@ -6,18 +5,29 @@ from utils import generate_random_color, generate_meeting_hash
 
 meetings_bp = Blueprint('meetings', __name__)
 
+def validate_required_fields(data, required_fields):
+    """Valida que los campos requeridos estén presentes en los datos proporcionados."""
+    missing_fields = [field for field in required_fields if not data.get(field)]
+    if missing_fields:
+        abort(400, f'Missing required fields: {", ".join(missing_fields)}')
+
+def get_or_create_role(role_name):
+    """Obtiene un rol por nombre o lo crea si no existe."""
+    role = Role.query.filter_by(name=role_name).first()
+    if not role:
+        role = Role(name=role_name)
+        db.session.add(role)
+        db.session.flush()  # Flushea para obtener el ID del rol
+    return role
+
 @meetings_bp.route('/meetings', methods=['POST'])
 def create_meeting():
     data = request.json
     
     # Verificación de campos requeridos
-    if not data or 'title' not in data or 'creator_email' not in data:
-        abort(400, 'Missing required fields')
-
-    required_fields = ['title', 'creator_name', 'creator_email']
-    missing_fields = [field for field in required_fields if not data.get(field)]
-    if missing_fields:
-        abort(400, f'Missing required fields: {", ".join(missing_fields)}')
+    if not data:
+        abort(400, 'Request must be JSON')
+    validate_required_fields(data, ['title', 'creator_name', 'creator_email'])
 
     # Normalizar el correo electrónico del creador
     normalized_email = data['creator_email'].strip().lower()
@@ -47,22 +57,12 @@ def create_meeting():
         )
 
         # Obtener o crear los roles de "moderator" y "creator"
-        moderator_role = Role.query.filter_by(name='moderator').first()
-        if not moderator_role:
-            moderator_role = Role(name='moderator')
-            db.session.add(moderator_role)
-            db.session.flush()  # Flushea para obtener el ID del rol
-
-        creator_role = Role.query.filter_by(name='creator').first()
-        if not creator_role:
-            creator_role = Role(name='creator')
-            db.session.add(creator_role)
-            db.session.flush()  # Flushea para obtener el ID del rol
+        moderator_role = get_or_create_role('moderator')
+        creator_role = get_or_create_role('creator')
 
         # Asignar los roles al creador
         if moderator_role not in creator.roles:
             creator.roles.append(moderator_role)
-
         if creator_role not in creator.roles:
             creator.roles.append(creator_role)
 
@@ -86,6 +86,8 @@ def create_meeting():
 def delete_meeting(meeting_id):
     try:
         meeting = Meeting.query.get_or_404(meeting_id)
+
+        # Opcional: Verificar dependencias antes de eliminar
         db.session.delete(meeting)
         db.session.commit()
         return jsonify({'message': 'Meeting deleted successfully'}), 200
@@ -100,37 +102,33 @@ def get_all_meetings():
 
 @meetings_bp.route('/meetings/<int:meeting_id>', methods=['GET'])
 def get_meeting_by_id(meeting_id):
-    meeting = Meeting.query.get(meeting_id)
-    if not meeting:
-        abort(404, 'Meeting not found')
+    meeting = Meeting.query.get_or_404(meeting_id)
     return jsonify(meeting.serialize()), 200
-
 
 @meetings_bp.route('/meetings/<int:meeting_id>/add_guest', methods=['POST'])
 def add_guest_to_meeting(meeting_id):
     data = request.json
     if not data:
         abort(400, 'Request must be JSON')
+    validate_required_fields(data, ['name', 'email'])
 
-    required_fields = ['name', 'email']
-    missing_fields = [field for field in required_fields if not data.get(field)]
-    if missing_fields:
-        abort(400, f'Missing required fields: {", ".join(missing_fields)}')
+    normalized_email = data['email'].strip().lower()
 
     try:
         meeting = Meeting.query.get_or_404(meeting_id)
 
+        # Verificar si el invitado ya existe para evitar duplicados
+        existing_user = User.query.filter_by(email=normalized_email).first()
+        if existing_user:
+            abort(400, f'User with email {normalized_email} already exists.')
+
         # Crear nuevo usuario
-        new_user = User(name=data['name'].strip(), email=data['email'].strip())
+        new_user = User(name=data['name'].strip(), email=normalized_email)
         db.session.add(new_user)
-        db.session.flush()  # Flush to get new_user.id before committing
+        db.session.flush()  # Flushea para obtener el ID del usuario
 
         # Obtener o crear el rol de "guest"
-        guest_role = Role.query.filter_by(name='guest').first()
-        if not guest_role:
-            guest_role = Role(name='guest')
-            db.session.add(guest_role)
-            db.session.flush()  # Flushea para obtener el ID del rol
+        guest_role = get_or_create_role('guest')
 
         # Añadir el nuevo invitado a la reunión
         color = generate_random_color()

@@ -1,6 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from utils import generate_random_color, generate_meeting_hash
+import hashlib
 
 db = SQLAlchemy()
 
@@ -13,34 +14,47 @@ guest_participation = db.Table('user_meeting',
     db.Column('color', db.String(7), nullable=False)  # Color asignado al usuario para la reunión
 )
 
-class Role(db.Model):
-    __tablename__ = 'role'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), nullable=False, unique=True)
-    permissions = db.Column(db.Text)  # Permisos almacenados como JSON o cadena de texto
-
-    def __repr__(self):
-        return f'<Role {self.name}>'
+# Tabla de asociación entre User y Role
+user_roles = db.Table('user_roles',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
+)
 
 class User(db.Model):
     __tablename__ = 'user'
-
+    
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    active = db.Column(db.Boolean, nullable=False, default=True)
 
-    # Relación con reuniones
-    meetings = db.relationship('Meeting', secondary=guest_participation, backref='participants', lazy='select')
-    timeslots = db.relationship('Timeslot', backref='user', lazy='select')
+    # Relación con roles
+    roles = db.relationship('Role', secondary=user_roles, backref=db.backref('users', lazy='dynamic'))
+
+    def __init__(self, name, email):
+        self.name = name
+        self.email = email
 
     def serialize(self):
         return {
             'id': self.id,
             'name': self.name,
             'email': self.email,
-            'active': self.active
+            'roles': [role.name for role in self.roles]
+        }
+
+class Role(db.Model):
+    __tablename__ = 'role'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+
+    def __init__(self, name):
+        self.name = name
+
+    def serialize(self):
+        return {
+            'id': self.id,
+            'name': self.name
         }
 
 class Meeting(db.Model):
@@ -59,6 +73,16 @@ class Meeting(db.Model):
     # Relación con otros modelos
     timeslots = db.relationship('Timeslot', backref='meeting', lazy='joined')
     final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy='joined')
+
+    def __init__(self, title, description, creator_id):
+        self.title = title
+        self.description = description
+        self.creator_id = creator_id
+        self.password_hash = self.generate_password_hash(title)
+
+    def generate_password_hash(self, title):
+        unique_string = f"{title}-{self.creator_id}-{datetime.utcnow().timestamp()}"
+        return hashlib.sha256(unique_string.encode()).hexdigest()
 
     def serialize(self):
         return {
