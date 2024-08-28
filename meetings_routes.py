@@ -80,7 +80,7 @@ def create_meeting():
 
     except SQLAlchemyError as e:
         db.session.rollback()
-        abort(500, f'Error creating meeting: {str(e)}')
+        abort(500, f'Error creating meeting: {str(e)}') 
 
 @meetings_bp.route('/meetings/<int:meeting_id>', methods=['DELETE'])
 def delete_meeting(meeting_id):
@@ -93,21 +93,18 @@ def delete_meeting(meeting_id):
         db.session.rollback()
         abort(500, f'Error deleting meeting: {str(e)}')
 
-@meetings_bp.route('/meetings/<int:meeting_id>/access/<string:hash>', methods=['GET'])
-def access_meeting(meeting_id, hash):
-    try:
-        # Buscar la reunión por ID
-        meeting = Meeting.query.get_or_404(meeting_id)
+@meetings_bp.route('/meetings', methods=['GET'])
+def get_all_meetings():
+    meetings = Meeting.query.all()
+    return jsonify([meeting.serialize() for meeting in meetings]), 200
 
-        # Verificar si la reunión es privada y si el hash coincide
-        if meeting.is_private and hash != meeting.password_hash:
-            abort(403, 'Invalid access hash')
+@meetings_bp.route('/meetings/<int:meeting_id>', methods=['GET'])
+def get_meeting_by_id(meeting_id):
+    meeting = Meeting.query.get(meeting_id)
+    if not meeting:
+        abort(404, 'Meeting not found')
+    return jsonify(meeting.serialize()), 200
 
-        # Si todo es válido, conceder acceso
-        return jsonify({'message': 'Access granted'}), 200
-
-    except SQLAlchemyError as e:
-        abort(500, f'Error accessing meeting: {str(e)}')
 
 @meetings_bp.route('/meetings/<int:meeting_id>/add_guest', methods=['POST'])
 def add_guest_to_meeting(meeting_id):
