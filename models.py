@@ -74,15 +74,11 @@ class Meeting(db.Model):
     timeslots = db.relationship('Timeslot', backref='meeting', lazy='joined')
     final_date = db.relationship('FinalDate', backref='meeting', uselist=False, lazy='joined')
 
-    def __init__(self, title, description, creator_id):
+    def __init__(self, title, description, creator_id, password_hash):
         self.title = title
         self.description = description
         self.creator_id = creator_id
-        self.password_hash = self.generate_password_hash(title)
-
-    def generate_password_hash(self, title):
-        unique_string = f"{title}-{self.creator_id}-{datetime.utcnow().timestamp()}"
-        return hashlib.sha256(unique_string.encode()).hexdigest()
+        self.password_hash = password_hash
 
     def serialize(self):
         return {
