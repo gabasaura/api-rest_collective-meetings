@@ -1,4 +1,3 @@
-#### final_dates_bp for Final Date ####
 from flask import Blueprint, jsonify, abort, request
 from sqlalchemy.exc import SQLAlchemyError
 from models import db, Timeslot, FinalDate, guest_participation
@@ -9,31 +8,50 @@ final_dates_bp = Blueprint('final_dates', __name__)
 @final_dates_bp.route('/final_dates', methods=['GET'])
 def get_final_dates():
     meeting_id = request.args.get('meeting_id')
+    
     if not meeting_id:
         abort(400, 'Meeting ID is required')
 
     try:
-        # Obtén todos los timeslots para la reunión específica
+        # Convertir meeting_id a entero
+        meeting_id = int(meeting_id)
+
+        # Obtener todos los timeslots para la reunión específica
         timeslots = Timeslot.query.filter_by(meeting_id=meeting_id).all()
-        final_date = calculate_final_date([timeslot.date for timeslot in timeslots])
+
+        # Extraer las fechas únicas de los timeslots
+        unique_dates = list(set(timeslot.date for timeslot in timeslots))
+        
+        # Verificar si hay fechas disponibles antes de calcular
+        if not unique_dates:
+            return jsonify({'message': 'No available dates found'}), 404
+
+        # Calcular la fecha final utilizando la función proporcionada
+        final_date = calculate_final_date(unique_dates)
 
         if final_date:
-            return jsonify({'final_date': final_date}), 200
+            return jsonify({'final_date': final_date.isoformat()}), 200
         else:
-            return jsonify({'message': 'No available dates found'}), 404
+            return jsonify({'message': 'No final date could be calculated'}), 404
+
+    except ValueError:
+        abort(400, 'Invalid Meeting ID')
     except SQLAlchemyError as e:
         abort(500, f'Error retrieving final dates: {str(e)}')
 
 @final_dates_bp.route('/final_date/<int:final_date_id>/update_confirmed', methods=['POST'])
 def update_confirmed_for_final_date(final_date_id):
     try:
+        # Get the final date object or return 404 if not found
         final_date = FinalDate.query.get_or_404(final_date_id)
         
+        # Count confirmed participants for the meeting associated with the final date
         confirmed_count = db.session.query(guest_participation).filter_by(
             meeting_id=final_date.meeting_id,
             confirmed=True
         ).count()
 
+        # Update the confirmed participants count
         final_date.confirmed_participants = confirmed_count
         db.session.commit()
 
@@ -58,7 +76,7 @@ def create_final_date():
         abort(400, f'Missing required fields: {", ".join(missing_fields)}')
 
     try:
-        # Verifica si ya existe una fecha final con los mismos detalles
+        # Check for existing final date with the same details
         existing_final_date = FinalDate.query.filter_by(
             meeting_id=data['meeting_id'],
             confirmed_date=data['confirmed_date'],
@@ -68,6 +86,7 @@ def create_final_date():
         if existing_final_date:
             abort(400, 'A final date with these details already exists')
 
+        # Create and add new final date to the database
         new_final_date = FinalDate(
             meeting_id=data['meeting_id'],
             confirmed_date=data['confirmed_date'],

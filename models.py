@@ -1,7 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from utils import generate_random_color, generate_meeting_hash
-import hashlib
+from sqlalchemy import Integer, CheckConstraint
 
 db = SQLAlchemy()
 
@@ -101,8 +101,13 @@ class Timeslot(db.Model):
     meeting_id = db.Column(db.Integer, db.ForeignKey('meeting.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     date = db.Column(db.Date, nullable=False)
-    block = db.Column(db.Enum('Block 1', 'Block 2', 'Block 3', name='block_enum'), nullable=False)
+    block = db.Column(Integer, nullable=False)
     available = db.Column(db.Boolean, nullable=False, default=True)
+
+        # Agregar una restricción para validar los valores permitidos
+    __table_args__ = (
+        CheckConstraint('block in (1, 2, 3)', name='check_block_valid'),
+    )
 
     def serialize(self):
         return {
